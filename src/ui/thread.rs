@@ -55,7 +55,7 @@ fn bot_pane(f: &mut Frame, area: Rect, app: &App) {
         vec![
             Line::raw(""),
             Line::from(vec![Span::styled(
-                "neo is thinking",
+                "neo is thinking…",
                 Style::default()
                     .fg(theme::CYAN)
                     .add_modifier(Modifier::BOLD),
@@ -81,7 +81,7 @@ fn bot_pane(f: &mut Frame, area: Rect, app: &App) {
             Some(r) => vec![
                 Line::raw(""),
                 Line::from(vec![Span::styled(
-                    "idle",
+                    "lens cooled",
                     Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
                 )]),
                 Line::from(vec![
@@ -103,15 +103,15 @@ fn bot_pane(f: &mut Frame, area: Rect, app: &App) {
             None => vec![
                 Line::raw(""),
                 Line::from(vec![Span::styled(
-                    "ready",
+                    "lens warmed · awaiting orders",
                     Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
                 )]),
                 Line::from(vec![Span::styled(
-                    "type a prompt below",
+                    "type below, hit enter, watch the lens scan",
                     Style::default().fg(theme::DIM),
                 )]),
                 Line::from(vec![Span::styled(
-                    "enter to send  ·  ctrl+1..6 workflow",
+                    "ctrl+1..6 picks a workflow preset",
                     Style::default().fg(theme::FAINT),
                 )]),
                 Line::raw(""),
