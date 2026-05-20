@@ -1,78 +1,90 @@
 # AgentWatch demo — VHS script
 #
-# Renders demo.gif: open agentwatch, type a pun, watch the R2 lens scan
-# while neo streams a thoughtful response, then tab through Cost / Insights
-# / Overview to show the live data lighting up.
+# Renders demo.gif: open agentwatch, pick the cheap "oracle" workflow,
+# ask a real question, watch the R2 lens scan while neo streams the
+# response, then cycle through observer tabs to show the spend and
+# insights light up.
 #
 # Run:   vhs demo.tape
-# Needs: OPENROUTER_API_KEY in env (inherited from parent shell)
-#        a built agentwatch binary at ./target/release/agentwatch
-#        a built neo binary at ~/projects/active/neo/target/release/neo
+# Needs: OPENROUTER_API_KEY in env (sourced via ~/.zshrc),
+#        a built agentwatch binary at ./target/release/agentwatch,
+#        a neo binary findable on PATH or in ~/projects/active/neo/target/release/.
 
 Output demo.gif
 
 # bash, not zsh — p10k's instant-prompt warning clobbers the demo and
-# trips crossterm's input reader.
+# trips crossterm's input reader. OPENROUTER_API_KEY is inherited from
+# whatever shell ran `vhs demo.tape`.
 Set Shell "bash"
 Set FontSize 14
 Set Width 1280
 Set Height 760
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 32ms
+Set TypingSpeed 28ms
 Set Framerate 18
 Set Padding 10
 
-# --- Boot ---------------------------------------------------------------
-# Pre-select the oracle workflow via --workflow so the demo doesn't kick
-# off the full feature-build pipeline.
+# --- Boot ----------------------------------------------------------------
+# Pre-select the cheap "oracle" workflow via --workflow so we don't burn
+# budget on the full feature-build pipeline. Land on [1] Thread (default).
 Hide
 Type "./target/release/agentwatch --workflow oracle"
 Enter
 Sleep 2s
 Show
 
-# Land on [1] Thread. The R2 bot reads "lens warmed · awaiting orders".
+# Land on [1] Thread — the R2 bot is idle, lens steady, oracle pre-selected.
 Sleep 3s
 
-# --- Type a memorable prompt --------------------------------------------
-# The pun lands either way: even without knowing the engine is named neo,
-# it's a meta question to the AI. With the context it's a free pun.
-Type "neo, what is the matrix?"
+# --- Type a real prompt -------------------------------------------------
+Type "what makes a great CLI tool? one paragraph."
 Sleep 1500ms
 Enter
 
 # --- Neo runs ----------------------------------------------------------
-# Lens scans, hologram dots fade in, status text on the right of the bot
-# ticks the seconds. The response streams into the transcript above.
-# We give it room to finish (claude-sonnet-4 + tool use ≈ 20–25s).
-Sleep 26s
+# Lens starts scanning, hologram dots fade in, status text on the right
+# of the bot ticks the seconds. Streaming output appears above.
+Sleep 14s
 
-# --- Spend ticking up --------------------------------------------------
-# Tab cycles forward: Thread → Console → Agents → Plans → Sessions →
-# Tools → Models → Cost. Seven Tabs to reach Cost from Thread.
-Tab
-Tab
-Tab
-Tab
-Tab
-Tab
-Tab
-Sleep 4s
+# --- Cycle through observer tabs ----------------------------------------
+# Tab key cycles forward: Thread → Console → Agents → Plans → Sessions →
+# Tools → Models → Cost → Overview → Insights → Thread.
+# We dwell on the high-impact ones.
 
-# --- Overview rollup ---------------------------------------------------
-Tab
-Sleep 4s
-
-# --- Insights light up -------------------------------------------------
-Tab
-Sleep 4s
-
-# --- Back home, response still in the transcript ------------------------
+# Console — full instrument panel showing the same submission
 Tab
 Sleep 3s
 
-# --- Quit gracefully ---------------------------------------------------
+# Agents — the agent that ran lights up green
+Tab
+Sleep 3s
+
+# Plans — pseudo-pipeline reconstructed from the invocation
+Tab
+Sleep 3s
+
+# Skip Sessions and Tools, jump to Models
+Tab
+Tab
+Tab
+Sleep 3s
+
+# Cost — gauges tick, by-model bar appears
+Tab
+Sleep 3s
+
+# Overview — one-screen rollup of everything
+Tab
+Sleep 3s
+
+# Insights — rule engine cards
+Tab
+Sleep 3s
+
+# Back home with one more Tab and quit
+Tab
+Sleep 2s
 Escape
-Sleep 400ms
+Sleep 500ms
 Escape
-Sleep 800ms
+Sleep 1s
