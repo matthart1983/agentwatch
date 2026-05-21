@@ -122,35 +122,46 @@ impl Team {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ActiveSelection {
-    active: String,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TeamsFile {
+    pub active: Option<String>,
+    #[serde(default)]
+    pub teams: Vec<Team>,
 }
 
 fn config_path() -> Result<PathBuf> {
     let base = dirs::config_dir().context("could not determine config dir")?;
-    Ok(base.join("agentwatch").join("team.toml"))
+    Ok(base.join("agentwatch").join("teams.toml"))
 }
 
-/// Read the persisted active team name. Returns `None` if the file is
-/// missing or unreadable.
-pub fn load_active_name() -> Option<String> {
-    let path = config_path().ok()?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    let sel: ActiveSelection = toml::from_str(&text).ok()?;
-    Some(sel.active)
+/// Load the persisted teams file. Missing file is fine — returns empty.
+/// On disk we keep only user-defined teams; presets live in the binary
+/// and are merged in `App::new()`.
+pub fn load_teams_file() -> TeamsFile {
+    let Ok(path) = config_path() else {
+        return TeamsFile::default();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return TeamsFile::default();
+    };
+    toml::from_str(&text).unwrap_or_default()
 }
 
-/// Write the active team name so it survives across runs.
-pub fn save_active_name(name: &str) -> Result<()> {
+/// Persist user-defined teams + active name. Presets are excluded so a
+/// preset rename in a future binary version doesn't break user state.
+pub fn save_teams_file(file: &TeamsFile) -> Result<()> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let sel = ActiveSelection {
-        active: name.to_string(),
-    };
-    let text = toml::to_string_pretty(&sel)?;
+    let text = toml::to_string_pretty(file)?;
     std::fs::write(&path, text)?;
     Ok(())
+}
+
+/// Backwards-compat shim — the old single-name file is auto-migrated on
+/// first save_teams_file call. New callers use `load_teams_file` directly.
+pub fn load_active_name() -> Option<String> {
+    let file = load_teams_file();
+    file.active
 }

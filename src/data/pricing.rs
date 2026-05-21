@@ -48,6 +48,12 @@ pub fn lookup(model: &str) -> Option<ModelPrice> {
         .map(|(_, p)| *p)
 }
 
+/// All known model ids in the pricing table — used by the `/team models`
+/// slash command for discoverability.
+pub fn known_models() -> Vec<&'static str> {
+    PRICES.iter().map(|(id, _)| *id).collect()
+}
+
 /// Compute the USD cost of one invocation. Returns 0.0 if the model
 /// isn't in our table — caller decides whether that means "free" or
 /// "unknown".

@@ -6,7 +6,7 @@ use tui_textarea::TextArea;
 
 use crate::data::{
     contract::ControlCommand, invocations, team, threads, threads::FullThread, InvocationStore,
-    Team, ThreadSummary,
+    Team, TeamMember, ThreadSummary,
 };
 use crate::driver::{InboxWriter, JobEvent, JobId, LineSource, Runner};
 
@@ -173,8 +173,17 @@ impl App {
         prompt.set_cursor_line_style(Default::default());
         let inbox = InboxWriter::new().ok();
         let runner = Runner::new();
-        let teams = Team::presets();
-        let active_team = team::load_active_name()
+        let mut teams = Team::presets();
+        let persisted = team::load_teams_file();
+        // Append user-defined teams (skip dupes if a user team somehow
+        // shares a name with a preset; preset wins).
+        for ut in persisted.teams {
+            if !teams.iter().any(|t| t.name == ut.name) {
+                teams.push(ut);
+            }
+        }
+        let active_team = persisted
+            .active
             .and_then(|n| teams.iter().position(|t| t.name == n))
             .unwrap_or(0);
         Self {
@@ -557,6 +566,108 @@ impl App {
                     self.set_toast(&format!("no '{}' on the current team", agent));
                 }
             }
+            Some("add") => {
+                let agent = parts.next().unwrap_or("");
+                if agent.is_empty() {
+                    self.set_toast("usage: /team add <agent> [model] [count]");
+                    return;
+                }
+                if !AGENT_ORDER.contains(&agent) {
+                    self.set_toast(&format!(
+                        "unknown agent '{}' — try: {}",
+                        agent,
+                        AGENT_ORDER.join(" ")
+                    ));
+                    return;
+                }
+                let model = parts.next().unwrap_or("auto").to_string();
+                let count: u8 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+                if self.current_team().members.iter().any(|m| m.agent == agent) {
+                    self.set_toast(&format!(
+                        "'{}' is already on the team — use /team set / /team count to edit",
+                        agent
+                    ));
+                    return;
+                }
+                self.current_team_mut().members.push(TeamMember {
+                    agent: agent.to_string(),
+                    model,
+                    count,
+                });
+                self.set_toast(&format!("+ {} added to team", agent));
+            }
+            Some("rm") | Some("remove") => {
+                let agent = parts.next().unwrap_or("");
+                if agent.is_empty() {
+                    self.set_toast("usage: /team rm <agent>");
+                    return;
+                }
+                let team = self.current_team_mut();
+                let before = team.members.len();
+                team.members.retain(|m| m.agent != agent);
+                if team.members.len() < before {
+                    self.set_toast(&format!("- {} removed", agent));
+                } else {
+                    self.set_toast(&format!("'{}' not on the current team", agent));
+                }
+            }
+            Some("save") => {
+                let new_name = parts.next().unwrap_or("").to_string();
+                if new_name.is_empty() {
+                    self.set_toast("usage: /team save <name>");
+                    return;
+                }
+                if ["balanced", "lean", "scaled", "full"].contains(&new_name.as_str()) {
+                    self.set_toast(&format!(
+                        "'{}' is a built-in preset — pick a different name",
+                        new_name
+                    ));
+                    return;
+                }
+                let blurb = parts.collect::<Vec<_>>().join(" ");
+                let mut clone = self.current_team().clone();
+                clone.name = new_name.clone();
+                if !blurb.is_empty() {
+                    clone.blurb = blurb;
+                }
+                // Replace existing user team of same name, else push.
+                if let Some(idx) = self.teams.iter().position(|t| t.name == new_name) {
+                    self.teams[idx] = clone;
+                    self.active_team = idx;
+                } else {
+                    self.teams.push(clone);
+                    self.active_team = self.teams.len() - 1;
+                }
+                self.persist_teams();
+                self.set_toast(&format!("saved as '{}' and activated", new_name));
+            }
+            Some("delete") | Some("rm-team") => {
+                let target = parts.next().unwrap_or("").to_string();
+                if target.is_empty() {
+                    self.set_toast("usage: /team delete <name>");
+                    return;
+                }
+                if ["balanced", "lean", "scaled", "full"].contains(&target.as_str()) {
+                    self.set_toast("can't delete a built-in preset");
+                    return;
+                }
+                let Some(idx) = self.teams.iter().position(|t| t.name == target) else {
+                    self.set_toast(&format!("no team '{}'", target));
+                    return;
+                };
+                self.teams.remove(idx);
+                if self.active_team >= self.teams.len() {
+                    self.active_team = 0;
+                } else if self.active_team > idx {
+                    self.active_team -= 1;
+                }
+                self.persist_teams();
+                self.set_toast(&format!("deleted '{}'", target));
+            }
+            Some("models") => {
+                let names: Vec<&str> = crate::data::pricing::known_models();
+                self.set_toast(&format!("known models: {}", names.join(" · ")));
+            }
             Some(name) => {
                 if let Some(idx) = self.teams.iter().position(|t| t.name == name) {
                     self.active_team = idx;
@@ -577,8 +688,27 @@ impl App {
     fn after_team_switch(&mut self) {
         let name = self.current_team().name.clone();
         let blurb = self.current_team().blurb.clone();
-        let _ = team::save_active_name(&name);
+        self.persist_teams();
         self.set_toast(&format!("team → {} ({})", name, blurb));
+    }
+
+    /// Write all user-defined teams plus the active selection to disk.
+    /// Presets are excluded — they live in the binary and a future rename
+    /// would otherwise break user state.
+    fn persist_teams(&self) {
+        let preset_names: std::collections::HashSet<&'static str> =
+            ["balanced", "lean", "scaled", "full"].into_iter().collect();
+        let user_teams: Vec<Team> = self
+            .teams
+            .iter()
+            .filter(|t| !preset_names.contains(t.name.as_str()))
+            .cloned()
+            .collect();
+        let file = team::TeamsFile {
+            active: Some(self.current_team().name.clone()),
+            teams: user_teams,
+        };
+        let _ = team::save_teams_file(&file);
     }
 
     fn set_toast(&mut self, text: &str) {
@@ -903,7 +1033,7 @@ pub const SLASH_CMDS: &[SlashCmd] = &[
     SlashCmd { name: "reload",   usage: "/reload",                       help: "re-read threads + invocations" },
     SlashCmd { name: "help",     usage: "/help",                         help: "show this list as a toast" },
     SlashCmd { name: "quit",     usage: "/quit",                         help: "exit AgentWatch" },
-    SlashCmd { name: "team",     usage: "/team [next|prev|<name>|set <a> <m>|count <a> <n>]", help: "switch / edit the active team" },
+    SlashCmd { name: "team",     usage: "/team [list|next|prev|<name>|add|rm|set|count|save|delete|models]", help: "build / switch / save dev teams" },
     SlashCmd { name: "resume",   usage: "/resume [<id-fragment>]",       help: "load a past thread into the working transcript" },
     SlashCmd { name: "threads",  usage: "/threads",                      help: "→ [5] Sessions tab" },
     SlashCmd { name: "cost",     usage: "/cost",                         help: "→ [8] Cost tab" },

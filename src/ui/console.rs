@@ -561,8 +561,8 @@ fn pipeline_rail(f: &mut Frame, area: Rect, app: &App) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(12), // TEAM panel
-            Constraint::Length(6),  // ACTIVE AGENTS
+            Constraint::Length(15), // TEAM panel — fits up to 8 members + est/task
+            Constraint::Length(5),  // ACTIVE AGENTS
             Constraint::Min(0),     // WORKFLOWS picker
         ])
         .split(inner);
@@ -573,6 +573,8 @@ fn pipeline_rail(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn team_panel(f: &mut Frame, area: Rect, app: &App) {
+    use crate::data::pricing;
+
     let team = app.current_team();
     let dim = Style::default().fg(theme::DIM);
     let fg = Style::default().fg(theme::FG);
@@ -580,13 +582,37 @@ fn team_panel(f: &mut Frame, area: Rect, app: &App) {
         .fg(theme::CYAN)
         .add_modifier(Modifier::BOLD);
 
+    // Typical-call estimates (rough). Real numbers will vary per task.
+    const TYP_IN: u32 = 3_000;
+    const TYP_OUT: u32 = 800;
+    // Used when model = "auto" — pick a middle-of-the-road model.
+    const AUTO_FALLBACK: &str = "anthropic/claude-sonnet-4";
+
+    let cost_for = |model: &str, count: u8| -> f64 {
+        let resolved = if model == "auto" { AUTO_FALLBACK } else { model };
+        pricing::compute_cost(resolved, TYP_IN, TYP_OUT) * count as f64
+    };
+    let team_cost: f64 = team
+        .members
+        .iter()
+        .map(|m| cost_for(&m.model, m.count))
+        .sum();
+    let cost_tier = if team_cost < 0.05 {
+        "$"
+    } else if team_cost < 0.20 {
+        "$$"
+    } else {
+        "$$$"
+    };
+
     let mut lines = vec![
         Line::from(vec![
             Span::styled(" TEAM  ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
             Span::styled(team.name.clone(), bold),
+            Span::styled(format!("   {} agents", team.total_size()), dim),
             Span::styled(
-                format!("   {} agents", team.total_size()),
-                dim,
+                format!("  {}", cost_tier),
+                Style::default().fg(theme::YELLOW),
             ),
         ]),
         Line::from(vec![Span::styled(format!(" {}", team.blurb), dim)]),
@@ -605,17 +631,29 @@ fn team_panel(f: &mut Frame, area: Rect, app: &App) {
         } else {
             "  ".to_string()
         };
+        let est = cost_for(&m.model, m.count);
         lines.push(Line::from(vec![
             Span::styled(" ● ", Style::default().fg(theme::GREEN)),
             Span::styled(format!("{:<10}", m.agent), fg),
             Span::styled(format!("{:<3}", count_str), Style::default().fg(theme::YELLOW)),
-            Span::styled(model_label, model_style),
+            Span::styled(format!("{:<14}", truncate(&model_label, 14)), model_style),
+            Span::styled(format!("~${:.3}", est), dim),
         ]));
     }
 
     lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(" est/task ", dim),
+        Span::styled(
+            format!("~${:.3}", team_cost),
+            Style::default()
+                .fg(theme::FG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  (typical call × team)", dim),
+    ]));
     lines.push(Line::from(Span::styled(
-        " /team next · /team set <a> <m>",
+        " /team add <a> · /team set · /team save",
         Style::default().fg(theme::FAINT),
     )));
 
