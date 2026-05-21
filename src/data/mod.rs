@@ -2,6 +2,7 @@ pub mod contract;
 pub mod insights;
 pub mod invocations;
 pub mod paths;
+pub mod pricing;
 pub mod source;
 pub mod team;
 pub mod threads;

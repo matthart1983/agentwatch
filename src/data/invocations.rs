@@ -34,7 +34,18 @@ impl InvocationStore {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(rec) = serde_json::from_str::<InvocationRecord>(&line) {
+            if let Ok(mut rec) = serde_json::from_str::<InvocationRecord>(&line) {
+                // Neo records cost: 0.0 today (see PLAN.md PR #1 follow-ups).
+                // Compute it from tokens + our pricing table so downstream
+                // aggregators show real numbers. Honest fallback: leave it 0
+                // if the model isn't in the pricing table.
+                if rec.cost == 0.0 {
+                    rec.cost = super::pricing::compute_cost(
+                        &rec.model,
+                        rec.tokens_in,
+                        rec.tokens_out,
+                    );
+                }
                 records.push(rec);
             }
         }
