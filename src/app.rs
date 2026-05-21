@@ -4,7 +4,9 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use tui_textarea::TextArea;
 
-use crate::data::{contract::ControlCommand, invocations, threads, InvocationStore, ThreadSummary};
+use crate::data::{
+    contract::ControlCommand, invocations, team, threads, InvocationStore, Team, ThreadSummary,
+};
 use crate::driver::{InboxWriter, JobEvent, JobId, LineSource, Runner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +118,9 @@ pub struct App {
     /// Last toast — a one-liner displayed in the transcript briefly after
     /// slash commands so the user gets feedback without it being noisy.
     pub toast: Option<Toast>,
+    /// Available team presets, loaded on startup. Index 0 is the default.
+    pub teams: Vec<Team>,
+    pub active_team: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +169,10 @@ impl App {
         prompt.set_cursor_line_style(Default::default());
         let inbox = InboxWriter::new().ok();
         let runner = Runner::new();
+        let teams = Team::presets();
+        let active_team = team::load_active_name()
+            .and_then(|n| teams.iter().position(|t| t.name == n))
+            .unwrap_or(0);
         Self {
             current_tab: Tab::Thread,
             started_at: SystemTime::now(),
@@ -183,7 +192,18 @@ impl App {
             frame: 0,
             should_quit: false,
             toast: None,
+            teams,
+            active_team,
         }
+    }
+
+    pub fn current_team(&self) -> &Team {
+        &self.teams[self.active_team.min(self.teams.len() - 1)]
+    }
+
+    pub fn current_team_mut(&mut self) -> &mut Team {
+        let idx = self.active_team.min(self.teams.len() - 1);
+        &mut self.teams[idx]
     }
 
     pub fn workflow_name(&self) -> &'static str {
@@ -239,8 +259,13 @@ impl App {
         };
 
         // Spawn neo with the context-enriched prompt so neo sees the
-        // full conversation, not just the latest user line.
-        let job_id = self.runner.spawn(&workflow, &outbound_text);
+        // full conversation, not just the latest user line. If the active
+        // team has a non-auto model assignment we pass it via env so neo
+        // respects the team's model preference.
+        let override_model = self.current_team().override_model().map(|s| s.to_string());
+        let job_id =
+            self.runner
+                .spawn(&workflow, &outbound_text, override_model.as_deref());
         self.last_submit_status = Some(SubmitStatus::Sent {
             workflow: workflow.clone(),
             at,
@@ -332,8 +357,8 @@ impl App {
 
     fn dispatch_slash(&mut self, raw: &str) {
         let cmd = raw.trim_start_matches('/').trim().to_lowercase();
-        let (head, _rest) = match cmd.split_once(' ') {
-            Some((h, r)) => (h, r),
+        let (head, rest) = match cmd.split_once(' ') {
+            Some((h, r)) => (h, r.trim()),
             None => (cmd.as_str(), ""),
         };
         match head {
@@ -367,15 +392,110 @@ impl App {
                 self.reload_threads();
                 self.set_toast("reloaded threads + invocations");
             }
+            "team" => self.handle_team_cmd(rest),
             "help" | "?" => {
                 self.set_toast(
-                    "slash commands: /cancel /clear /reload /threads /cost /models /agents /plans /tools /overview /insights /console /thread /quit",
+                    "/cancel /clear /reload /quit · /threads /cost /models /agents /plans /tools /overview /insights /console /thread · /team [list|next|prev|<name>|set <agent> <model>|count <agent> <n>]",
                 );
             }
             _ => {
                 self.set_toast(&format!("unknown command: /{}", head));
             }
         }
+    }
+
+    fn handle_team_cmd(&mut self, args: &str) {
+        let mut parts = args.split_whitespace();
+        match parts.next() {
+            None | Some("show") => {
+                let t = self.current_team();
+                self.set_toast(&format!(
+                    "team: {} — {} agents · {}",
+                    t.name,
+                    t.total_size(),
+                    t.blurb
+                ));
+            }
+            Some("list") => {
+                let names: Vec<String> = self
+                    .teams
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        if i == self.active_team {
+                            format!("[{}]", t.name)
+                        } else {
+                            t.name.clone()
+                        }
+                    })
+                    .collect();
+                self.set_toast(&format!("teams: {}", names.join(" · ")));
+            }
+            Some("next") => {
+                self.active_team = (self.active_team + 1) % self.teams.len();
+                self.after_team_switch();
+            }
+            Some("prev") => {
+                self.active_team =
+                    (self.active_team + self.teams.len() - 1) % self.teams.len();
+                self.after_team_switch();
+            }
+            Some("set") => {
+                let agent = parts.next().unwrap_or("");
+                let model = parts.collect::<Vec<_>>().join(" ");
+                if agent.is_empty() || model.is_empty() {
+                    self.set_toast("usage: /team set <agent> <model>");
+                    return;
+                }
+                if let Some(m) = self.current_team_mut().member_mut(agent) {
+                    m.model = model.clone();
+                    self.set_toast(&format!("{} → model {}", agent, model));
+                } else {
+                    self.set_toast(&format!(
+                        "no '{}' on the current team — try /team next to switch",
+                        agent
+                    ));
+                }
+            }
+            Some("count") => {
+                let agent = parts.next().unwrap_or("");
+                let n: u8 = parts
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if agent.is_empty() || n == 0 {
+                    self.set_toast("usage: /team count <agent> <n>");
+                    return;
+                }
+                if let Some(m) = self.current_team_mut().member_mut(agent) {
+                    m.count = n;
+                    self.set_toast(&format!("{} count → {}", agent, n));
+                } else {
+                    self.set_toast(&format!("no '{}' on the current team", agent));
+                }
+            }
+            Some(name) => {
+                if let Some(idx) = self.teams.iter().position(|t| t.name == name) {
+                    self.active_team = idx;
+                    self.after_team_switch();
+                } else {
+                    let names: Vec<&str> =
+                        self.teams.iter().map(|t| t.name.as_str()).collect();
+                    self.set_toast(&format!(
+                        "no team '{}' — known: {}",
+                        name,
+                        names.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+
+    fn after_team_switch(&mut self) {
+        let name = self.current_team().name.clone();
+        let blurb = self.current_team().blurb.clone();
+        let _ = team::save_active_name(&name);
+        self.set_toast(&format!("team → {} ({})", name, blurb));
     }
 
     fn set_toast(&mut self, text: &str) {

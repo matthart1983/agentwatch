@@ -64,7 +64,12 @@ impl Runner {
     /// Spawn `neo <subcommand> <prompt>` and stream its output. The thread
     /// closes the channel for this job once the process exits. Returns
     /// the assigned `JobId`.
-    pub fn spawn(&self, workflow: &str, prompt: &str) -> JobId {
+    ///
+    /// `override_model`: when `Some(...)` it's forwarded to neo as the
+    /// `NEO_DEFAULT_MODEL` env var, which neo's config layer honours.
+    /// This is the coarse-grained way to wire team model selection until
+    /// neo accepts per-agent model assignment.
+    pub fn spawn(&self, workflow: &str, prompt: &str, override_model: Option<&str>) -> JobId {
         let id = JobId(self.next_id.fetch_add(1, Ordering::Relaxed));
         let subcommand = workflow_to_subcommand(workflow);
         let command_display = format!("neo {} \"{}\"", subcommand, truncate(prompt, 60));
@@ -80,9 +85,19 @@ impl Runner {
         let tx = self.tx.clone();
         let prompt_owned = prompt.to_string();
         let workflow_owned = workflow.to_string();
+        let override_owned = override_model.map(|s| s.to_string());
         let pids = self.pids.clone();
         thread::spawn(move || {
-            run(id, neo_bin, &workflow_owned, &prompt_owned, command_display, tx, pids)
+            run(
+                id,
+                neo_bin,
+                &workflow_owned,
+                &prompt_owned,
+                command_display,
+                override_owned,
+                tx,
+                pids,
+            )
         });
         id
     }
@@ -124,6 +139,7 @@ fn run(
     workflow: &str,
     prompt: &str,
     command_display: String,
+    override_model: Option<String>,
     tx: Sender<JobEvent>,
     pids: Arc<Mutex<HashMap<JobId, u32>>>,
 ) {
@@ -137,6 +153,9 @@ fn run(
     cmd.arg(subcommand).arg(prompt);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    if let Some(model) = override_model {
+        cmd.env("NEO_DEFAULT_MODEL", model);
+    }
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,

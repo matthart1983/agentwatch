@@ -73,8 +73,14 @@ fn status_strip(f: &mut Frame, area: Rect, app: &App) {
     let spent_today = app.invocations.total_cost_today();
 
     let workflow = app.workflow_name();
+    let team_name = app.current_team().name.clone();
+    let team_size = app.current_team().total_size();
 
     let left = Line::from(vec![
+        Span::styled(" team ", dim),
+        Span::styled(team_name, cyan_bold),
+        Span::styled(format!(" ({})", team_size), dim),
+        Span::styled("   │ ", faint),
         Span::styled(" workflow ", dim),
         Span::styled(workflow, cyan_bold),
         Span::styled("   │ ", faint),
@@ -555,36 +561,64 @@ fn pipeline_rail(f: &mut Frame, area: Rect, app: &App) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(11), // TASKS placeholder
+            Constraint::Length(12), // TEAM panel
             Constraint::Length(6),  // ACTIVE AGENTS
             Constraint::Min(0),     // WORKFLOWS picker
         ])
         .split(inner);
 
-    pipeline_tasks(f, sections[0]);
+    team_panel(f, sections[0], app);
     active_agents(f, sections[1], app);
     workflow_picker(f, sections[2], app);
 }
 
-fn pipeline_tasks(f: &mut Frame, area: Rect) {
+fn team_panel(f: &mut Frame, area: Rect, app: &App) {
+    let team = app.current_team();
     let dim = Style::default().fg(theme::DIM);
-    let lines = vec![
-        Line::from(Span::styled(" TASKS", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))),
-        Line::from(vec![Span::styled(" ○  pending", dim)]),
-        Line::from(vec![Span::styled(" ▸  running", Style::default().fg(theme::YELLOW))]),
-        Line::from(vec![Span::styled(" ✓  done", Style::default().fg(theme::GREEN))]),
+    let fg = Style::default().fg(theme::FG);
+    let bold = Style::default()
+        .fg(theme::CYAN)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" TEAM  ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(team.name.clone(), bold),
+            Span::styled(
+                format!("   {} agents", team.total_size()),
+                dim,
+            ),
+        ]),
+        Line::from(vec![Span::styled(format!(" {}", team.blurb), dim)]),
         Line::raw(""),
-        Line::from(Span::styled(" (no active pipeline)", dim)),
-        Line::raw(""),
-        Line::from(Span::styled(
-            " live DAG renders when neo PR #4",
-            dim,
-        )),
-        Line::from(Span::styled(
-            " is wired into orchestrator",
-            dim,
-        )),
     ];
+
+    for m in &team.members {
+        let model_label = if m.model == "auto" {
+            "(router)".to_string()
+        } else {
+            short_model(&m.model)
+        };
+        let model_style = if m.model == "auto" { dim } else { fg };
+        let count_str = if m.count > 1 {
+            format!("×{}", m.count)
+        } else {
+            "  ".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" ● ", Style::default().fg(theme::GREEN)),
+            Span::styled(format!("{:<10}", m.agent), fg),
+            Span::styled(format!("{:<3}", count_str), Style::default().fg(theme::YELLOW)),
+            Span::styled(model_label, model_style),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " /team next · /team set <a> <m>",
+        Style::default().fg(theme::FAINT),
+    )));
+
     f.render_widget(Paragraph::new(lines), area);
 }
 
