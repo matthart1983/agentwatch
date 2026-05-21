@@ -218,6 +218,11 @@ impl App {
             self.set_toast(&summary);
         }
 
+        // Session continuity — prepend prior turns from this agentwatch run
+        // so neo can answer follow-ups in context. Capped to keep prompt
+        // size sane.
+        let outbound_text = wrap_with_session_context(&self.submitted, &text);
+
         let workflow = self.workflow_name().to_string();
         let at = Utc::now();
 
@@ -227,14 +232,15 @@ impl App {
             Some(inbox) => inbox
                 .send(&ControlCommand::Prompt {
                     workflow: workflow.clone(),
-                    text: text.clone(),
+                    text: outbound_text.clone(),
                 })
                 .is_ok(),
             None => false,
         };
 
-        // Spawn neo to actually run the prompt and stream output back.
-        let job_id = self.runner.spawn(&workflow, &text);
+        // Spawn neo with the context-enriched prompt so neo sees the
+        // full conversation, not just the latest user line.
+        let job_id = self.runner.spawn(&workflow, &outbound_text);
         self.last_submit_status = Some(SubmitStatus::Sent {
             workflow: workflow.clone(),
             at,
@@ -464,6 +470,82 @@ impl App {
     pub fn selected_thread(&self) -> Option<&ThreadSummary> {
         self.threads.get(self.sessions_selected)
     }
+}
+
+/// Build a context-wrapped prompt that includes prior conversational
+/// turns from this agentwatch session so neo can answer follow-ups
+/// coherently. Each prior turn contributes the user line + the agent
+/// reply (collapsed from streaming lines).
+///
+/// Token budget: we cap total context at ~12_000 chars (≈3k tokens) by
+/// dropping oldest turns first. The current prompt is always preserved.
+pub fn wrap_with_session_context(prior: &[SubmittedPrompt], current: &str) -> String {
+    let completed_turns: Vec<&SubmittedPrompt> = prior
+        .iter()
+        .filter(|sp| !sp.response.is_empty())
+        .collect();
+    if completed_turns.is_empty() {
+        return current.to_string();
+    }
+
+    let mut turns: Vec<String> = Vec::new();
+    for sp in &completed_turns {
+        let reply: String = sp
+            .response
+            .iter()
+            .map(|line| strip_ansi(&line.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        turns.push(format!("User: {}\n\nAssistant: {}", sp.text, reply));
+    }
+
+    // Drop oldest turns until we're under budget.
+    const MAX_CONTEXT_CHARS: usize = 12_000;
+    let header = "Previous conversation in this session:\n\n";
+    let footer = "\n\n---\n\nLatest user message:\n";
+    let fixed_overhead = header.len() + footer.len() + current.len();
+
+    let mut total: usize = turns.iter().map(|t| t.len() + 4).sum::<usize>() + fixed_overhead;
+    while total > MAX_CONTEXT_CHARS && !turns.is_empty() {
+        let dropped = turns.remove(0);
+        total -= dropped.len() + 4;
+    }
+
+    if turns.is_empty() {
+        return current.to_string();
+    }
+
+    let mut out = String::with_capacity(total);
+    out.push_str(header);
+    for (i, t) in turns.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\n\n");
+        }
+        out.push_str(t);
+    }
+    out.push_str(footer);
+    out.push_str(current);
+    out
+}
+
+/// Strip ANSI CSI escape sequences (neo uses `colored!` heavily).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            while let Some(&p) = chars.peek() {
+                chars.next();
+                if p.is_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Scan a prompt for `@path` tokens, try to read each file, and return:
