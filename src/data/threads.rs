@@ -45,6 +45,61 @@ pub fn load_all() -> Result<Vec<ThreadSummary>> {
     load_from_dir(&dir)
 }
 
+/// A thread with its full message history. Used by resume.
+#[derive(Debug, Clone)]
+pub struct FullThread {
+    pub id: String,
+    pub workspace: String,
+    pub turns: Vec<Turn>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Turn {
+    pub user: String,
+    pub assistant: String,
+}
+
+/// Load one thread by id and return its user/assistant turns in order.
+/// System messages and tool messages are skipped — they're internal scaffolding
+/// and we want what the user actually saw.
+pub fn load_one(id: &str) -> Result<FullThread> {
+    let dir = paths::threads_dir()?;
+    let path = dir.join(format!("{}.json", id));
+    let bytes = std::fs::read(&path)?;
+    let raw: ThreadOnDisk = serde_json::from_slice(&bytes)?;
+
+    let mut turns = Vec::new();
+    let mut pending_user: Option<String> = None;
+    for msg in raw.messages {
+        let role = msg.role.unwrap_or_default();
+        let content = msg.content.unwrap_or_default();
+        if content.is_empty() {
+            continue;
+        }
+        match role.as_str() {
+            "user" => {
+                // If the previous user message wasn't answered, drop it
+                // (it was probably the same turn that's about to repeat).
+                pending_user = Some(content);
+            }
+            "assistant" => {
+                if let Some(user_text) = pending_user.take() {
+                    turns.push(Turn {
+                        user: user_text,
+                        assistant: content,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(FullThread {
+        id: raw.id,
+        workspace: raw.workspace,
+        turns,
+    })
+}
+
 fn load_from_dir(dir: &Path) -> Result<Vec<ThreadSummary>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {

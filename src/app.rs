@@ -5,7 +5,8 @@ use chrono::{DateTime, Utc};
 use tui_textarea::TextArea;
 
 use crate::data::{
-    contract::ControlCommand, invocations, team, threads, InvocationStore, Team, ThreadSummary,
+    contract::ControlCommand, invocations, team, threads, threads::FullThread, InvocationStore,
+    Team, ThreadSummary,
 };
 use crate::driver::{InboxWriter, JobEvent, JobId, LineSource, Runner};
 
@@ -451,6 +452,30 @@ impl App {
                 self.set_toast("reloaded threads + invocations");
             }
             "team" => self.handle_team_cmd(rest),
+            "resume" => {
+                let fragment = rest.trim();
+                let target_id = if fragment.is_empty() {
+                    self.threads.first().map(|t| t.id.clone())
+                } else {
+                    self.threads
+                        .iter()
+                        .find(|t| t.id.contains(fragment))
+                        .map(|t| t.id.clone())
+                };
+                match target_id {
+                    Some(id) => match threads::load_one(&id) {
+                        Ok(full) => self.resume_thread_full(full),
+                        Err(e) => self.set_toast(&format!("couldn't load thread: {}", e)),
+                    },
+                    None => {
+                        if fragment.is_empty() {
+                            self.set_toast("no threads to resume");
+                        } else {
+                            self.set_toast(&format!("no thread matches '{}'", fragment));
+                        }
+                    }
+                }
+            }
             "help" | "?" => {
                 self.set_toast(
                     "/cancel /clear /reload /quit · /threads /cost /models /agents /plans /tools /overview /insights /console /thread · /team [list|next|prev|<name>|set <agent> <model>|count <agent> <n>]",
@@ -648,6 +673,63 @@ impl App {
     pub fn selected_thread(&self) -> Option<&ThreadSummary> {
         self.threads.get(self.sessions_selected)
     }
+
+    /// Hydrate `self.submitted` from a past thread's user/assistant turns
+    /// so the Thread tab shows it and follow-up prompts continue the
+    /// conversation (via the existing session-context wrapper).
+    pub fn resume_thread_full(&mut self, full: FullThread) {
+        self.submitted.clear();
+        let base_time = Utc::now() - chrono::Duration::seconds(full.turns.len() as i64);
+        for (i, turn) in full.turns.iter().enumerate() {
+            let response: Vec<ResponseLine> = turn
+                .assistant
+                .lines()
+                .map(|l| ResponseLine {
+                    source: LineSource::Stdout,
+                    text: l.to_string(),
+                })
+                .collect();
+            self.submitted.push(SubmittedPrompt {
+                at: base_time + chrono::Duration::seconds(i as i64),
+                workflow: self.workflow_name().to_string(),
+                text: turn.user.clone(),
+                delivered: true,
+                job_id: None,
+                command: None,
+                response,
+                completed: Some(JobCompletion::Success),
+            });
+        }
+        let short = if full.id.len() > 6 {
+            &full.id[full.id.len() - 6..]
+        } else {
+            &full.id
+        };
+        self.set_toast(&format!(
+            "resumed T-...{} · {} turns",
+            short,
+            full.turns.len()
+        ));
+        self.current_tab = Tab::Thread;
+    }
+
+    /// Convenience: resume the currently selected Sessions row.
+    pub fn resume_selected(&mut self) -> bool {
+        let Some(t) = self.selected_thread() else {
+            return false;
+        };
+        let id = t.id.clone();
+        match threads::load_one(&id) {
+            Ok(full) => {
+                self.resume_thread_full(full);
+                true
+            }
+            Err(e) => {
+                self.set_toast(&format!("couldn't load thread: {}", e));
+                false
+            }
+        }
+    }
 }
 
 /// Build a context-wrapped prompt that includes prior conversational
@@ -822,6 +904,7 @@ pub const SLASH_CMDS: &[SlashCmd] = &[
     SlashCmd { name: "help",     usage: "/help",                         help: "show this list as a toast" },
     SlashCmd { name: "quit",     usage: "/quit",                         help: "exit AgentWatch" },
     SlashCmd { name: "team",     usage: "/team [next|prev|<name>|set <a> <m>|count <a> <n>]", help: "switch / edit the active team" },
+    SlashCmd { name: "resume",   usage: "/resume [<id-fragment>]",       help: "load a past thread into the working transcript" },
     SlashCmd { name: "threads",  usage: "/threads",                      help: "→ [5] Sessions tab" },
     SlashCmd { name: "cost",     usage: "/cost",                         help: "→ [8] Cost tab" },
     SlashCmd { name: "models",   usage: "/models",                       help: "→ [7] Models tab" },

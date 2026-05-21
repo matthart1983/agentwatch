@@ -121,7 +121,14 @@ fn sessions_table(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  {} threads ", count), Style::default().fg(theme::DIM)),
-        ]));
+        ]))
+        .title(
+            Line::from(vec![Span::styled(
+                " ↑↓ select · enter to resume ",
+                Style::default().fg(theme::DIM),
+            )])
+            .alignment(ratatui::layout::Alignment::Right),
+        );
     let inner = block.inner(area);
     f.render_widget(block, area);
 

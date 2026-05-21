@@ -22,6 +22,9 @@ pub enum Action {
     SlashPopupUp,
     SlashPopupDown,
     SlashPopupComplete,
+    /// Enter on an observer tab — tab-specific handler decides what to do.
+    /// Today: Sessions resumes the selected thread.
+    ObserverActivate,
 }
 
 /// Read one event (or time out and emit `Tick`). The caller passes:
@@ -133,6 +136,7 @@ fn observer_key(k: &KeyEvent) -> Option<Action> {
     match (k.code, k.modifiers) {
         (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => Some(Action::SelectionUp),
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => Some(Action::SelectionDown),
+        (KeyCode::Enter, _) => Some(Action::ObserverActivate),
         _ => None,
     }
 }

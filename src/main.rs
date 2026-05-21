@@ -110,6 +110,12 @@ fn run_loop<B: ratatui::backend::Backend>(
                     app.slash_complete();
                     app.slash_popup_idx = 0;
                 }
+                Action::ObserverActivate => match app.current_tab {
+                    Tab::Sessions => {
+                        app.resume_selected();
+                    }
+                    _ => {}
+                },
             }
         }
     }
