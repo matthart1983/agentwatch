@@ -148,12 +148,15 @@ fn model_line<'a>(m: &'a ModelAgg, selected: bool) -> Line<'a> {
     };
 
     let model_label = truncate(&m.model, 32);
-    let prov_label = truncate(&m.provider, 12);
+    let prov_enum = crate::data::Provider::from_str(&m.provider);
+    let prov_bg = if selected { theme::SEL_BG } else { theme::BG };
+    let prov_style = Style::default().fg(prov_enum.color()).bg(prov_bg);
 
     Line::from(vec![
         Span::styled("  ●  ", dot_style),
         Span::styled(format!("{:<32}  ", model_label), base),
-        Span::styled(format!("{:<12} ", prov_label), Style::default().fg(theme::CYAN).bg(if selected { theme::SEL_BG } else { theme::BG })),
+        Span::styled(format!("[{}] ", prov_enum.badge()), prov_style),
+        Span::styled(format!("{:<11} ", prov_enum.name()), prov_style),
         Span::styled(format!("{:>5}  ", m.calls), base),
         Span::styled(format!("${:>6.2}  ", m.cost), base),
         Span::styled(format!("{:>6}  ", format_latency(m.p50_latency_ms)), dim),

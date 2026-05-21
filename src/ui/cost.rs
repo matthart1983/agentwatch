@@ -33,10 +33,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(35),
+            Constraint::Percentage(25),
+        ])
         .split(chunks[2]);
     by_model(f, row[0], app);
     by_agent(f, row[1], app);
+    by_provider(f, row[2], app);
 
     projection(f, chunks[3], app);
 }
@@ -203,6 +208,66 @@ fn by_agent(f: &mut Frame, area: Rect, app: &App) {
         let color = palette[i % palette.len()];
         let pct = if total > 0.0 { (a.cost / total) * 100.0 } else { 0.0 };
         lines.push(bar_line(&a.agent, a.cost, pct, color, bw, max));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn by_provider(f: &mut Frame, area: Rect, app: &App) {
+    let mut providers = app.invocations.by_provider_today();
+    providers.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    let total: f64 = providers.iter().map(|p| p.cost).sum();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::FAINT))
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "BY PROVIDER",
+                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  today  ${:.2} ", total), Style::default().fg(theme::DIM)),
+        ]));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if providers.is_empty() {
+        f.render_widget(empty_message(), inner);
+        return;
+    }
+
+    let bw = (inner.width as usize).saturating_sub(22);
+    let max = providers.iter().map(|p| p.cost).fold(0.0_f64, f64::max).max(0.01);
+    let mut lines = Vec::new();
+    for p in providers.iter().take(6) {
+        let prov = crate::data::Provider::from_str(&p.provider);
+        let color = prov.color();
+        if p.subscription_only {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" [{}] ", prov.badge()), Style::default().fg(color)),
+                Span::styled(format!("{:<10}", prov.name()), Style::default().fg(theme::FG)),
+                Span::styled(
+                    format!(" {} calls · sub.", p.calls),
+                    Style::default().fg(theme::DIM),
+                ),
+            ]));
+            continue;
+        }
+        let filled = ((p.cost / max) * bw as f64).round() as usize;
+        let empty = bw.saturating_sub(filled);
+        let bar: String = std::iter::repeat('█').take(filled).collect::<String>()
+            + &std::iter::repeat('░').take(empty).collect::<String>();
+        let pct = if total > 0.0 { (p.cost / total) * 100.0 } else { 0.0 };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" [{}] ", prov.badge()), Style::default().fg(color)),
+            Span::styled(format!("{:<10}", prov.name()), Style::default().fg(theme::FG)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("      "),
+            Span::styled(format!("${:>5.2} ", p.cost), Style::default().fg(theme::FG)),
+            Span::styled(bar, Style::default().fg(color)),
+            Span::styled(format!(" {:>3.0}%", pct), Style::default().fg(theme::DIM)),
+        ]));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }

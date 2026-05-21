@@ -461,6 +461,7 @@ impl App {
                 self.set_toast("reloaded threads + invocations");
             }
             "team" => self.handle_team_cmd(rest),
+            "auth" => self.handle_auth_cmd(),
             "resume" => {
                 let fragment = rest.trim();
                 let target_id = if fragment.is_empty() {
@@ -683,6 +684,16 @@ impl App {
                 }
             }
         }
+    }
+
+    fn handle_auth_cmd(&mut self) {
+        use crate::data::provider::{is_configured, Provider};
+        let mut bits: Vec<String> = Vec::new();
+        for p in Provider::all() {
+            let mark = if is_configured(p) { "✓" } else { "✗" };
+            bits.push(format!("{} {}", mark, p.name()));
+        }
+        self.set_toast(&format!("auth: {}", bits.join(" · ")));
     }
 
     fn after_team_switch(&mut self) {
@@ -1034,6 +1045,7 @@ pub const SLASH_CMDS: &[SlashCmd] = &[
     SlashCmd { name: "help",     usage: "/help",                         help: "show this list as a toast" },
     SlashCmd { name: "quit",     usage: "/quit",                         help: "exit AgentWatch" },
     SlashCmd { name: "team",     usage: "/team [list|next|prev|<name>|add|rm|set|count|save|delete|models]", help: "build / switch / save dev teams" },
+    SlashCmd { name: "auth",     usage: "/auth",                         help: "show which LLM providers are configured (env-only)" },
     SlashCmd { name: "resume",   usage: "/resume [<id-fragment>]",       help: "load a past thread into the working transcript" },
     SlashCmd { name: "threads",  usage: "/threads",                      help: "→ [5] Sessions tab" },
     SlashCmd { name: "cost",     usage: "/cost",                         help: "→ [8] Cost tab" },

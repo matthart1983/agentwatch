@@ -632,11 +632,22 @@ fn team_panel(f: &mut Frame, area: Rect, app: &App) {
             "  ".to_string()
         };
         let est = cost_for(&m.model, m.count);
+
+        // Provider tag — predicted from the model id. For "auto" we
+        // don't know which provider would handle it, so show "··".
+        let prov = if m.model == "auto" {
+            crate::data::Provider::Unknown
+        } else {
+            crate::data::provider_for(&m.model)
+        };
+        let badge = format!("[{}]", prov.badge());
+
         lines.push(Line::from(vec![
             Span::styled(" ● ", Style::default().fg(theme::GREEN)),
             Span::styled(format!("{:<10}", m.agent), fg),
             Span::styled(format!("{:<3}", count_str), Style::default().fg(theme::YELLOW)),
             Span::styled(format!("{:<14}", truncate(&model_label, 14)), model_style),
+            Span::styled(format!("{} ", badge), Style::default().fg(prov.color())),
             Span::styled(format!("~${:.3}", est), dim),
         ]));
     }

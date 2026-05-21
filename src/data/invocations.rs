@@ -36,15 +36,28 @@ impl InvocationStore {
             }
             if let Ok(mut rec) = serde_json::from_str::<InvocationRecord>(&line) {
                 // Neo records cost: 0.0 today (see PLAN.md PR #1 follow-ups).
-                // Compute it from tokens + our pricing table so downstream
-                // aggregators show real numbers. Honest fallback: leave it 0
-                // if the model isn't in the pricing table.
+                // Compute it from tokens + the pricing table using the
+                // stored provider so direct/aggregator paths score
+                // correctly. Falls back to 0 (honest gap) when neither
+                // (provider, model) nor (inferred-provider, model) is in
+                // the table.
                 if rec.cost == 0.0 {
-                    rec.cost = super::pricing::compute_cost(
+                    let prov = super::provider::Provider::from_str(&rec.provider);
+                    rec.cost = super::pricing::compute_cost_with(
+                        prov,
                         &rec.model,
                         rec.tokens_in,
                         rec.tokens_out,
                     );
+                    if rec.cost == 0.0 {
+                        // Provider stored was Unknown or missing — fall
+                        // back to the prefix heuristic.
+                        rec.cost = super::pricing::compute_cost(
+                            &rec.model,
+                            rec.tokens_in,
+                            rec.tokens_out,
+                        );
+                    }
                 }
                 records.push(rec);
             }
@@ -70,6 +83,11 @@ impl InvocationStore {
     /// Per-agent aggregates over the last 24 hours.
     pub fn by_agent_today(&self) -> Vec<AgentAgg> {
         aggregate_by(self.today(), |r| r.agent.clone(), build_agent_agg)
+    }
+
+    /// Per-provider aggregates over the last 24 hours.
+    pub fn by_provider_today(&self) -> Vec<ProviderAgg> {
+        aggregate_by(self.today(), |r| r.provider.clone(), build_provider_agg)
     }
 
     pub fn total_cost_today(&self) -> f64 {
@@ -197,6 +215,14 @@ pub struct AgentAgg {
     pub last_seen: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderAgg {
+    pub provider: String,
+    pub calls: usize,
+    pub cost: f64,
+    pub subscription_only: bool,
+}
+
 fn aggregate_by<'a, I, K, B, V>(records: I, key: K, build: B) -> Vec<V>
 where
     I: Iterator<Item = &'a InvocationRecord>,
@@ -238,6 +264,18 @@ fn build_model_agg(model: &str, rs: &[&InvocationRecord]) -> ModelAgg {
         success_rate,
         tokens_in,
         tokens_out,
+    }
+}
+
+fn build_provider_agg(provider: &str, rs: &[&InvocationRecord]) -> ProviderAgg {
+    let calls = rs.len();
+    let cost: f64 = rs.iter().map(|r| r.cost).sum();
+    let subscription_only = provider.eq_ignore_ascii_case("copilot");
+    ProviderAgg {
+        provider: provider.to_string(),
+        calls,
+        cost,
+        subscription_only,
     }
 }
 
