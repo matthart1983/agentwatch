@@ -19,6 +19,9 @@ pub enum Action {
     PromptSubmit,
     PromptCancel,
     CancelJob,
+    SlashPopupUp,
+    SlashPopupDown,
+    SlashPopupComplete,
 }
 
 /// Read one event (or time out and emit `Tick`). The caller passes:
@@ -27,11 +30,14 @@ pub enum Action {
 ///   tabs only when the user isn't mid-typing
 /// - `job_in_flight` so Esc on an empty prompt cancels the running neo
 ///   subprocess (preferred) instead of quitting AgentWatch
+/// - `slash_mode` so Up/Down/Tab navigate the slash-completion popup
+///   instead of going into the prompt textarea
 pub fn poll_event(
     tick_rate: Duration,
     current_tab: Tab,
     prompt_is_empty: bool,
     job_in_flight: bool,
+    slash_mode: bool,
 ) -> Result<Option<Action>> {
     if !event::poll(tick_rate)? {
         return Ok(Some(Action::Tick));
@@ -49,9 +55,25 @@ pub fn poll_event(
     }
 
     if matches!(current_tab, Tab::Console | Tab::Thread) {
+        // Slash-popup intercepts a handful of nav keys before they hit
+        // the textarea so Up/Down move the highlight and Tab completes.
+        if slash_mode {
+            if let Some(a) = slash_popup_key(&k) {
+                return Ok(Some(a));
+            }
+        }
         Ok(Some(Action::PromptKey(k)))
     } else {
         Ok(observer_key(&k))
+    }
+}
+
+fn slash_popup_key(k: &KeyEvent) -> Option<Action> {
+    match (k.code, k.modifiers) {
+        (KeyCode::Up, _) => Some(Action::SlashPopupUp),
+        (KeyCode::Down, _) => Some(Action::SlashPopupDown),
+        (KeyCode::Tab, _) => Some(Action::SlashPopupComplete),
+        _ => None,
     }
 }
 

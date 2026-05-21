@@ -76,6 +76,7 @@ fn run_loop<B: ratatui::backend::Backend>(
             app.current_tab,
             app.prompt_is_empty(),
             app.job_in_flight(),
+            app.slash_mode(),
         )? {
             match action {
                 Action::Quit => break,
@@ -93,11 +94,21 @@ fn run_loop<B: ratatui::backend::Backend>(
                 }
                 Action::PromptKey(k) => {
                     let _ = app.prompt.input(Input::from(k));
+                    // Reset popup highlight whenever the prompt changes,
+                    // so a previous selection doesn't out-of-bounds the
+                    // new (possibly shorter) filter list.
+                    app.slash_popup_idx = 0;
                 }
                 Action::PromptSubmit => app.submit_prompt(),
                 Action::PromptCancel => app.clear_prompt(),
                 Action::CancelJob => {
                     app.cancel_running_job();
+                }
+                Action::SlashPopupUp => app.slash_popup_up(),
+                Action::SlashPopupDown => app.slash_popup_down(),
+                Action::SlashPopupComplete => {
+                    app.slash_complete();
+                    app.slash_popup_idx = 0;
                 }
             }
         }

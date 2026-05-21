@@ -121,6 +121,9 @@ pub struct App {
     /// Available team presets, loaded on startup. Index 0 is the default.
     pub teams: Vec<Team>,
     pub active_team: usize,
+    /// Highlighted index in the slash-completion popup. Reset to 0 every
+    /// time the filter list changes shape.
+    pub slash_popup_idx: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -194,7 +197,62 @@ impl App {
             toast: None,
             teams,
             active_team,
+            slash_popup_idx: 0,
         }
+    }
+
+    /// Is the user composing a slash command (prompt starts with `/`)?
+    pub fn slash_mode(&self) -> bool {
+        self.prompt
+            .lines()
+            .iter()
+            .next()
+            .map(|l| l.starts_with('/'))
+            .unwrap_or(false)
+    }
+
+    /// Currently filtered slash-command matches for the typed prompt.
+    pub fn slash_matches(&self) -> Vec<&'static SlashCmd> {
+        let text = self.prompt.lines().join(" ");
+        slash_matches(&text)
+    }
+
+    pub fn slash_popup_up(&mut self) {
+        let matches = self.slash_matches();
+        if matches.is_empty() {
+            return;
+        }
+        self.slash_popup_idx = self.slash_popup_idx.saturating_sub(1);
+    }
+
+    pub fn slash_popup_down(&mut self) {
+        let matches = self.slash_matches();
+        if matches.is_empty() {
+            return;
+        }
+        if self.slash_popup_idx + 1 < matches.len() {
+            self.slash_popup_idx += 1;
+        }
+    }
+
+    /// Replace the prompt with the highlighted completion + a space so the
+    /// user can type the rest (e.g. arguments). Returns true if a completion
+    /// was applied.
+    pub fn slash_complete(&mut self) -> bool {
+        let Some(cmd) = self
+            .slash_matches()
+            .get(self.slash_popup_idx)
+            .copied()
+        else {
+            return false;
+        };
+        self.prompt = TextArea::default();
+        self.prompt.set_cursor_line_style(Default::default());
+        for ch in format!("/{} ", cmd.name).chars() {
+            self.prompt
+                .input(tui_textarea::Input { key: tui_textarea::Key::Char(ch), ctrl: false, alt: false, shift: false });
+        }
+        true
     }
 
     pub fn current_team(&self) -> &Team {
@@ -747,6 +805,44 @@ pub fn expand_attachments(prompt: &str, workspace: &std::path::Path) -> (String,
         )),
     };
     (out, summary)
+}
+
+/// One entry in the slash-command registry. Used for both the popup and
+/// the `/help` toast so we never drift.
+pub struct SlashCmd {
+    pub name: &'static str,
+    pub usage: &'static str,
+    pub help: &'static str,
+}
+
+pub const SLASH_CMDS: &[SlashCmd] = &[
+    SlashCmd { name: "cancel",   usage: "/cancel",                       help: "kill the running neo subprocess" },
+    SlashCmd { name: "clear",    usage: "/clear",                        help: "wipe the in-memory transcript" },
+    SlashCmd { name: "reload",   usage: "/reload",                       help: "re-read threads + invocations" },
+    SlashCmd { name: "help",     usage: "/help",                         help: "show this list as a toast" },
+    SlashCmd { name: "quit",     usage: "/quit",                         help: "exit AgentWatch" },
+    SlashCmd { name: "team",     usage: "/team [next|prev|<name>|set <a> <m>|count <a> <n>]", help: "switch / edit the active team" },
+    SlashCmd { name: "threads",  usage: "/threads",                      help: "→ [5] Sessions tab" },
+    SlashCmd { name: "cost",     usage: "/cost",                         help: "→ [8] Cost tab" },
+    SlashCmd { name: "models",   usage: "/models",                       help: "→ [7] Models tab" },
+    SlashCmd { name: "agents",   usage: "/agents",                       help: "→ [3] Agents tab" },
+    SlashCmd { name: "plans",    usage: "/plans",                        help: "→ [4] Plans tab" },
+    SlashCmd { name: "tools",    usage: "/tools",                        help: "→ [6] Tools tab" },
+    SlashCmd { name: "overview", usage: "/overview",                     help: "→ [9] Overview tab" },
+    SlashCmd { name: "insights", usage: "/insights",                     help: "→ [0] Insights tab" },
+    SlashCmd { name: "console",  usage: "/console",                      help: "→ [2] Console tab" },
+    SlashCmd { name: "thread",   usage: "/thread",                       help: "→ [1] Thread tab" },
+];
+
+/// Filter the registry by the text after the leading `/`. Empty filter
+/// returns the full list. Match is a case-insensitive prefix.
+pub fn slash_matches(prompt: &str) -> Vec<&'static SlashCmd> {
+    let stripped = prompt.trim_start_matches('/').to_lowercase();
+    let (head, _) = stripped.split_once(' ').unwrap_or((stripped.as_str(), ""));
+    SLASH_CMDS
+        .iter()
+        .filter(|c| c.name.starts_with(head))
+        .collect()
 }
 
 /// Canonical order for the Agents tab. Matches neo's `AgentId` enum order.

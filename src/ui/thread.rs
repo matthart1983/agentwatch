@@ -34,6 +34,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn bot_pane(f: &mut Frame, area: Rect, app: &App) {
+    // Slash mode: replace the bot with a navigable command popup.
+    if app.slash_mode() {
+        slash_popup(f, area, app);
+        return;
+    }
+
     let working = app.waiting_for_runtime().is_some();
     bot::render(f, area, app.frame, working);
 
@@ -355,6 +361,83 @@ fn home_relative(p: &str) -> String {
         }
     }
     p.to_string()
+}
+
+fn slash_popup(f: &mut Frame, area: Rect, app: &App) {
+    let matches = app.slash_matches();
+
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme::CYAN))
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "/",
+                Style::default()
+                    .fg(theme::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "slash commands",
+                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  ↑↓ navigate · tab complete · enter run ",
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if matches.is_empty() {
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                "  (no matching command — try /help)",
+                Style::default().fg(theme::DIM),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let max_visible = inner.height as usize;
+    let selected = app.slash_popup_idx.min(matches.len() - 1);
+    let start = if selected >= max_visible {
+        selected + 1 - max_visible
+    } else {
+        0
+    };
+
+    let mut lines = Vec::with_capacity(max_visible);
+    for (i, cmd) in matches.iter().enumerate().skip(start).take(max_visible) {
+        let is_selected = i == selected;
+        let (row_bg, name_style, help_style) = if is_selected {
+            (
+                theme::SEL_BG,
+                Style::default()
+                    .fg(theme::CYAN)
+                    .bg(theme::SEL_BG)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::FG).bg(theme::SEL_BG),
+            )
+        } else {
+            (
+                theme::BG,
+                Style::default().fg(theme::FG),
+                Style::default().fg(theme::DIM),
+            )
+        };
+        let marker = if is_selected { "▸ " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {}", marker),
+                Style::default().fg(theme::GREEN).bg(row_bg),
+            ),
+            Span::styled(format!("{:<14}", cmd.usage), name_style),
+            Span::styled(format!("  {}", cmd.help), help_style),
+        ]));
+    }
+    f.render_widget(ratatui::widgets::Paragraph::new(lines), inner);
 }
 
 fn short_model(model: &str) -> String {
