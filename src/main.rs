@@ -67,7 +67,16 @@ fn run_loop<B: ratatui::backend::Backend>(
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
-        if let Some(action) = poll_event(tick_rate, app.current_tab, app.prompt_is_empty())? {
+        if app.should_quit {
+            break;
+        }
+
+        if let Some(action) = poll_event(
+            tick_rate,
+            app.current_tab,
+            app.prompt_is_empty(),
+            app.job_in_flight(),
+        )? {
             match action {
                 Action::Quit => break,
                 Action::SwitchTab(t) => app.current_tab = t,
@@ -87,6 +96,9 @@ fn run_loop<B: ratatui::backend::Backend>(
                 }
                 Action::PromptSubmit => app.submit_prompt(),
                 Action::PromptCancel => app.clear_prompt(),
+                Action::CancelJob => {
+                    app.cancel_running_job();
+                }
             }
         }
     }

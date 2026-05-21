@@ -213,6 +213,18 @@ fn transcript(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
 
+    if let Some(t) = app.active_toast() {
+        lines.push(Line::from(vec![
+            Span::styled(" ▸ ", Style::default().fg(theme::YELLOW)),
+            Span::styled(
+                t.text.clone(),
+                Style::default()
+                    .fg(theme::YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
     // Take the most-recent slice that fits the visible area so we always
     // show the newest activity.
     let visible_h = area.height as usize;
@@ -303,7 +315,7 @@ fn prompt_box(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  enter to send  ·  router → {} ", wf.blurb),
+                format!("  enter to send  ·  /help for commands  ·  router → {} ", wf.blurb),
                 Style::default().fg(theme::DIM),
             ),
         ]));

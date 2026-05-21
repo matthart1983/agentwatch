@@ -33,6 +33,9 @@ notify = "6"
 uuid = { version = "1", features = ["v4", "serde"] }
 tui-textarea = "0.5"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = []
 # Connect to the (future) neo-agentd unix socket for sub-second updates.

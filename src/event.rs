@@ -18,16 +18,20 @@ pub enum Action {
     PromptKey(KeyEvent),
     PromptSubmit,
     PromptCancel,
+    CancelJob,
 }
 
 /// Read one event (or time out and emit `Tick`). The caller passes:
 /// - `current_tab` so we know whether driver-tab semantics apply
 /// - `prompt_is_empty` so single-letter quits (`q`, `Esc`) work on driver
 ///   tabs only when the user isn't mid-typing
+/// - `job_in_flight` so Esc on an empty prompt cancels the running neo
+///   subprocess (preferred) instead of quitting AgentWatch
 pub fn poll_event(
     tick_rate: Duration,
     current_tab: Tab,
     prompt_is_empty: bool,
+    job_in_flight: bool,
 ) -> Result<Option<Action>> {
     if !event::poll(tick_rate)? {
         return Ok(Some(Action::Tick));
@@ -40,7 +44,7 @@ pub fn poll_event(
         return Ok(None);
     }
 
-    if let Some(a) = global_hotkey(&k, current_tab, prompt_is_empty) {
+    if let Some(a) = global_hotkey(&k, current_tab, prompt_is_empty, job_in_flight) {
         return Ok(Some(a));
     }
 
@@ -51,21 +55,30 @@ pub fn poll_event(
     }
 }
 
-fn global_hotkey(k: &KeyEvent, current_tab: Tab, prompt_is_empty: bool) -> Option<Action> {
+fn global_hotkey(
+    k: &KeyEvent,
+    current_tab: Tab,
+    prompt_is_empty: bool,
+    job_in_flight: bool,
+) -> Option<Action> {
     let driver = matches!(current_tab, Tab::Console | Tab::Thread);
 
     match (k.code, k.modifiers) {
         // ── Universal quits ─────────────────────────────────────────────
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(Action::Quit),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) if prompt_is_empty => Some(Action::Quit),
-        // ── 'q' / Esc — quit on observer tabs always, on driver tabs
-        //    only when the prompt is empty (otherwise they're prompt input
-        //    / prompt-clear).
+        // ── 'q' / Esc — context-sensitive on driver tabs:
+        //   text in prompt → clear it
+        //   prompt empty + job running → cancel the job
+        //   prompt empty + no job → quit
         (KeyCode::Char('q'), KeyModifiers::NONE) if !driver => Some(Action::Quit),
-        (KeyCode::Char('q'), KeyModifiers::NONE) if driver && prompt_is_empty => {
+        (KeyCode::Char('q'), KeyModifiers::NONE) if driver && prompt_is_empty && !job_in_flight => {
             Some(Action::Quit)
         }
         (KeyCode::Esc, _) if !driver => Some(Action::Quit),
+        (KeyCode::Esc, _) if driver && prompt_is_empty && job_in_flight => {
+            Some(Action::CancelJob)
+        }
         (KeyCode::Esc, _) if driver && prompt_is_empty => Some(Action::Quit),
         (KeyCode::Esc, _) if driver => Some(Action::PromptCancel),
 

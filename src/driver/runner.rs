@@ -8,11 +8,13 @@
 //! loop. Once neo PR #3's wiring lands, we can swap this for the
 //! drop-a-file-in-inbox path — the UI surface stays the same.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +32,7 @@ pub enum JobEvent {
     Line { id: JobId, source: LineSource, text: String },
     Finished { id: JobId, status: Option<ExitStatus> },
     Failed { id: JobId, reason: String },
+    Cancelled { id: JobId },
 }
 
 pub struct Runner {
@@ -37,6 +40,9 @@ pub struct Runner {
     pub rx: Receiver<JobEvent>,
     next_id: AtomicU64,
     neo_bin: Option<PathBuf>,
+    /// PID per in-flight job, so `cancel()` can send SIGTERM. Entries are
+    /// removed by the run thread once the child exits.
+    pids: Arc<Mutex<HashMap<JobId, u32>>>,
 }
 
 impl Runner {
@@ -47,6 +53,7 @@ impl Runner {
             rx,
             next_id: AtomicU64::new(1),
             neo_bin: resolve_neo_binary(),
+            pids: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -73,9 +80,36 @@ impl Runner {
         let tx = self.tx.clone();
         let prompt_owned = prompt.to_string();
         let workflow_owned = workflow.to_string();
-        thread::spawn(move || run(id, neo_bin, &workflow_owned, &prompt_owned, command_display, tx));
+        let pids = self.pids.clone();
+        thread::spawn(move || {
+            run(id, neo_bin, &workflow_owned, &prompt_owned, command_display, tx, pids)
+        });
         id
     }
+
+    /// Send SIGTERM to the in-flight subprocess for this job, if any. The
+    /// run thread will see the child exit and emit `Cancelled` followed by
+    /// `Finished`.
+    pub fn cancel(&self, id: JobId) -> bool {
+        let pid = self.pids.lock().ok().and_then(|p| p.get(&id).copied());
+        let Some(pid) = pid else { return false };
+        send_sigterm(pid);
+        let _ = self.tx.send(JobEvent::Cancelled { id });
+        true
+    }
+}
+
+#[cfg(unix)]
+fn send_sigterm(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+}
+
+#[cfg(not(unix))]
+fn send_sigterm(_pid: u32) {
+    // No-op on non-unix; cancel becomes a soft "stop waiting" rather than
+    // a real kill. AgentWatch is macOS+Linux for v1 so this is unreachable.
 }
 
 impl Default for Runner {
@@ -91,6 +125,7 @@ fn run(
     prompt: &str,
     command_display: String,
     tx: Sender<JobEvent>,
+    pids: Arc<Mutex<HashMap<JobId, u32>>>,
 ) {
     let subcommand = workflow_to_subcommand(workflow);
     let _ = tx.send(JobEvent::Started {
@@ -114,6 +149,12 @@ fn run(
         }
     };
 
+    // Register PID so cancel() can find it. Done before piping so a very
+    // fast cancel doesn't race.
+    if let Ok(mut p) = pids.lock() {
+        p.insert(id, child.id());
+    }
+
     // Spawn one reader thread per stream so we capture interleaved output.
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -133,6 +174,10 @@ fn run(
     }
     if let Some(h) = stderr_handle {
         let _ = h.join();
+    }
+
+    if let Ok(mut p) = pids.lock() {
+        p.remove(&id);
     }
 
     let _ = tx.send(JobEvent::Finished { id, status });

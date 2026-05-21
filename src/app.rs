@@ -111,6 +111,17 @@ pub struct App {
     /// Monotonic frame counter — bumped on every tick. Used for spinner
     /// animation and to throttle the invocations.jsonl auto-reload.
     pub frame: u64,
+    /// Set by `/quit`-style slash commands. Main loop polls and breaks.
+    pub should_quit: bool,
+    /// Last toast — a one-liner displayed in the transcript briefly after
+    /// slash commands so the user gets feedback without it being noisy.
+    pub toast: Option<Toast>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub text: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +181,8 @@ impl App {
             inbox,
             runner,
             frame: 0,
+            should_quit: false,
+            toast: None,
         }
     }
 
@@ -185,11 +198,26 @@ impl App {
     /// inbox AND spawn `neo` as a subprocess to actually execute the prompt
     /// so responses stream back to the UI today (without waiting for neo's
     /// ControlInbox wiring). Once that wiring lands we'll drop the spawn.
+    ///
+    /// A prompt that starts with `/` is intercepted as a slash command and
+    /// executed locally instead of being sent to neo.
     pub fn submit_prompt(&mut self) {
         let text = self.prompt.lines().join("\n").trim().to_string();
         if text.is_empty() {
             return;
         }
+
+        if text.starts_with('/') {
+            self.dispatch_slash(&text);
+            self.clear_prompt();
+            return;
+        }
+
+        let (text, attachment_summary) = expand_attachments(&text, &self.workspace);
+        if let Some(summary) = attachment_summary {
+            self.set_toast(&summary);
+        }
+
         let workflow = self.workflow_name().to_string();
         let at = Utc::now();
 
@@ -255,6 +283,18 @@ impl App {
                         sp.completed = Some(JobCompletion::SpawnError { reason });
                     }
                 }
+                JobEvent::Cancelled { id } => {
+                    if let Some(sp) = self.submitted.iter_mut().find(|s| s.job_id == Some(id)) {
+                        // Mark immediately so the spinner stops. The follow-up
+                        // Finished event (from the child reaping) is benign —
+                        // we only set completed if it's still None.
+                        if sp.completed.is_none() {
+                            sp.completed = Some(JobCompletion::SpawnError {
+                                reason: "cancelled".to_string(),
+                            });
+                        }
+                    }
+                }
             }
         }
     }
@@ -262,6 +302,92 @@ impl App {
     pub fn clear_prompt(&mut self) {
         self.prompt = TextArea::default();
         self.prompt.set_cursor_line_style(Default::default());
+    }
+
+    /// Kill the most recently submitted prompt's subprocess if it's still
+    /// running. The Runner emits a Cancelled event which `drain_runner_events`
+    /// turns into `JobCompletion::SpawnError { reason: "cancelled" }`.
+    pub fn cancel_running_job(&mut self) -> bool {
+        let Some(sp) = self.submitted.last() else {
+            return false;
+        };
+        if sp.completed.is_some() {
+            return false;
+        }
+        let Some(id) = sp.job_id else {
+            return false;
+        };
+        self.runner.cancel(id)
+    }
+
+    pub fn job_in_flight(&self) -> bool {
+        matches!(self.submitted.last(), Some(sp) if sp.completed.is_none() && sp.job_id.is_some())
+    }
+
+    fn dispatch_slash(&mut self, raw: &str) {
+        let cmd = raw.trim_start_matches('/').trim().to_lowercase();
+        let (head, _rest) = match cmd.split_once(' ') {
+            Some((h, r)) => (h, r),
+            None => (cmd.as_str(), ""),
+        };
+        match head {
+            "quit" | "exit" | "q" => {
+                self.should_quit = true;
+            }
+            "cancel" => {
+                if self.cancel_running_job() {
+                    self.set_toast("cancelled in-flight job");
+                } else {
+                    self.set_toast("no job to cancel");
+                }
+            }
+            "clear" => {
+                self.submitted.clear();
+                self.set_toast("transcript cleared");
+            }
+            "threads" | "sessions" => {
+                self.current_tab = Tab::Sessions;
+            }
+            "cost" => self.current_tab = Tab::Cost,
+            "models" => self.current_tab = Tab::Models,
+            "agents" => self.current_tab = Tab::Agents,
+            "plans" => self.current_tab = Tab::Plans,
+            "tools" => self.current_tab = Tab::Tools,
+            "overview" => self.current_tab = Tab::Overview,
+            "insights" => self.current_tab = Tab::Insights,
+            "console" => self.current_tab = Tab::Console,
+            "thread" | "home" => self.current_tab = Tab::Thread,
+            "reload" => {
+                self.reload_threads();
+                self.set_toast("reloaded threads + invocations");
+            }
+            "help" | "?" => {
+                self.set_toast(
+                    "slash commands: /cancel /clear /reload /threads /cost /models /agents /plans /tools /overview /insights /console /thread /quit",
+                );
+            }
+            _ => {
+                self.set_toast(&format!("unknown command: /{}", head));
+            }
+        }
+    }
+
+    fn set_toast(&mut self, text: &str) {
+        self.toast = Some(Toast {
+            text: text.to_string(),
+            created_at: Utc::now(),
+        });
+    }
+
+    /// Returns the active toast if it's still within the display window
+    /// (3 seconds). Past that the UI hides it.
+    pub fn active_toast(&self) -> Option<&Toast> {
+        let t = self.toast.as_ref()?;
+        if (Utc::now() - t.created_at).num_seconds() < 4 {
+            Some(t)
+        } else {
+            None
+        }
     }
 
     pub fn tick(&mut self) {
@@ -338,6 +464,87 @@ impl App {
     pub fn selected_thread(&self) -> Option<&ThreadSummary> {
         self.threads.get(self.sessions_selected)
     }
+}
+
+/// Scan a prompt for `@path` tokens, try to read each file, and return:
+/// - the prompt with a "Context:" block prepended listing the file contents
+/// - an optional summary string for the toast ("attached: foo.rs, bar.rs")
+///
+/// Files larger than 50KB are truncated. Tokens whose path doesn't resolve
+/// to a real file are left in the prompt verbatim and excluded from the
+/// summary. The summary string is `None` when no attachment was attempted.
+pub fn expand_attachments(prompt: &str, workspace: &std::path::Path) -> (String, Option<String>) {
+    let mut attached: Vec<(String, String)> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+
+    for token in prompt.split_whitespace() {
+        let Some(rest) = token.strip_prefix('@') else {
+            continue;
+        };
+        // Strip trailing punctuation that's almost never part of a path
+        let path_str = rest.trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | ')' | ']'));
+        if path_str.is_empty() {
+            continue;
+        }
+        let path = std::path::Path::new(path_str);
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        if !resolved.is_file() {
+            missing.push(path_str.to_string());
+            continue;
+        }
+        match std::fs::read_to_string(&resolved) {
+            Ok(mut content) => {
+                const MAX: usize = 50_000;
+                if content.len() > MAX {
+                    content.truncate(MAX);
+                    content.push_str("\n... (truncated)\n");
+                }
+                attached.push((path_str.to_string(), content));
+            }
+            Err(_) => missing.push(path_str.to_string()),
+        }
+    }
+
+    if attached.is_empty() && missing.is_empty() {
+        return (prompt.to_string(), None);
+    }
+
+    let mut out = String::new();
+    if !attached.is_empty() {
+        out.push_str("Context:\n");
+        for (path, content) in &attached {
+            out.push_str(&format!("\n--- @{} ---\n{}\n", path, content));
+        }
+        out.push_str("\n---\n\n");
+    }
+    out.push_str(prompt);
+
+    let summary = match (attached.len(), missing.len()) {
+        (a, 0) if a > 0 => Some(format!(
+            "attached {} file{}: {}",
+            a,
+            if a == 1 { "" } else { "s" },
+            attached
+                .iter()
+                .map(|(p, _)| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        (0, _) => Some(format!(
+            "no files matched: {}",
+            missing.join(", ")
+        )),
+        (a, _) => Some(format!(
+            "attached {} · couldn't find {}",
+            a,
+            missing.join(", ")
+        )),
+    };
+    (out, summary)
 }
 
 /// Canonical order for the Agents tab. Matches neo's `AgentId` enum order.
