@@ -100,6 +100,20 @@ impl Team {
                     TeamMember::auto("oracle"),
                 ],
             },
+            // Local-only preset — dispatches to ollama, never hits the
+            // network or burns API credit. Edit /team set coder <model>
+            // to pin a specific tag you've pulled (e.g. llama3.2:latest).
+            Team {
+                name: "local".to_string(),
+                blurb: "ollama only — free, offline, no API key".to_string(),
+                members: vec![
+                    TeamMember {
+                        agent: "coder".to_string(),
+                        model: "llama3.2:latest".to_string(),
+                        count: 1,
+                    },
+                ],
+            },
         ]
     }
 

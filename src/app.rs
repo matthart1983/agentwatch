@@ -618,7 +618,7 @@ impl App {
                     self.set_toast("usage: /team save <name>");
                     return;
                 }
-                if ["balanced", "lean", "scaled", "full"].contains(&new_name.as_str()) {
+                if ["balanced", "lean", "scaled", "full", "local"].contains(&new_name.as_str()) {
                     self.set_toast(&format!(
                         "'{}' is a built-in preset — pick a different name",
                         new_name
@@ -648,7 +648,7 @@ impl App {
                     self.set_toast("usage: /team delete <name>");
                     return;
                 }
-                if ["balanced", "lean", "scaled", "full"].contains(&target.as_str()) {
+                if ["balanced", "lean", "scaled", "full", "local"].contains(&target.as_str()) {
                     self.set_toast("can't delete a built-in preset");
                     return;
                 }
@@ -708,7 +708,9 @@ impl App {
     /// would otherwise break user state.
     fn persist_teams(&self) {
         let preset_names: std::collections::HashSet<&'static str> =
-            ["balanced", "lean", "scaled", "full"].into_iter().collect();
+            ["balanced", "lean", "scaled", "full", "local"]
+                .into_iter()
+                .collect();
         let user_teams: Vec<Team> = self
             .teams
             .iter()
