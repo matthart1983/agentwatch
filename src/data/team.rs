@@ -22,6 +22,11 @@ pub struct Team {
     pub name: String,
     pub blurb: String,
     pub members: Vec<TeamMember>,
+    /// True for ship-with-the-binary presets — the editor treats them
+    /// as read-only (you must save-as to a new name to edit). Not
+    /// persisted; reset on load from defaults.
+    #[serde(default)]
+    pub is_preset: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +40,19 @@ pub struct TeamMember {
     /// pipeline). Values above 1 are advisory until neo's parallelism
     /// honours them.
     pub count: u8,
+    /// Whether the member is active. `false` is "on the bench" — the
+    /// editor lets users toggle agents on/off without losing the model
+    /// they had configured.
+    #[serde(default = "default_true")]
+    pub included: bool,
+    /// Optional free-text note for this role (e.g. "rust-only", "review
+    /// security-heavy"). Surfaced in the SELECTED panel of the builder.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl TeamMember {
@@ -43,53 +61,72 @@ impl TeamMember {
             agent: agent.to_string(),
             model: "auto".to_string(),
             count: 1,
+            included: true,
+            notes: None,
         }
     }
 }
 
 impl Team {
-    /// Three ship-with-the-binary presets. Index 0 is the default.
+    /// Five ship-with-the-binary presets. Index 0 is the default.
+    /// All are marked `is_preset = true` so the editor treats them as
+    /// read-only (changes require save-as).
     pub fn presets() -> Vec<Team> {
+        let mk = |name: &str, blurb: &str, members: Vec<TeamMember>| Team {
+            name: name.to_string(),
+            blurb: blurb.to_string(),
+            members,
+            is_preset: true,
+        };
+
+        let coder_x3 = TeamMember {
+            agent: "coder".to_string(),
+            model: "auto".to_string(),
+            count: 3,
+            included: true,
+            notes: None,
+        };
+        let coder_llama = TeamMember {
+            agent: "coder".to_string(),
+            model: "llama3.2:latest".to_string(),
+            count: 1,
+            included: true,
+            notes: None,
+        };
+
         vec![
-            Team {
-                name: "balanced".to_string(),
-                blurb: "router → planner → coder ×1 → tester → reviewer".to_string(),
-                members: vec![
+            mk(
+                "balanced",
+                "router → planner → coder ×1 → tester → reviewer",
+                vec![
                     TeamMember::auto("router"),
                     TeamMember::auto("planner"),
                     TeamMember::auto("coder"),
                     TeamMember::auto("tester"),
                     TeamMember::auto("reviewer"),
                 ],
-            },
-            Team {
-                name: "lean".to_string(),
-                blurb: "router → coder ×1 (skip planner/review)".to_string(),
-                members: vec![
-                    TeamMember::auto("router"),
-                    TeamMember::auto("coder"),
-                ],
-            },
-            Team {
-                name: "scaled".to_string(),
-                blurb: "planner → coder ×3 || tester → reviewer → documenter".to_string(),
-                members: vec![
+            ),
+            mk(
+                "lean",
+                "router → coder ×1 (skip planner/review)",
+                vec![TeamMember::auto("router"), TeamMember::auto("coder")],
+            ),
+            mk(
+                "scaled",
+                "planner → coder ×3 || tester → reviewer → documenter",
+                vec![
                     TeamMember::auto("router"),
                     TeamMember::auto("planner"),
-                    TeamMember {
-                        agent: "coder".to_string(),
-                        model: "auto".to_string(),
-                        count: 3,
-                    },
+                    coder_x3,
                     TeamMember::auto("tester"),
                     TeamMember::auto("reviewer"),
                     TeamMember::auto("documenter"),
                 ],
-            },
-            Team {
-                name: "full".to_string(),
-                blurb: "all 8 agents available, router auto-picks per task".to_string(),
-                members: vec![
+            ),
+            mk(
+                "full",
+                "all 8 agents available, router auto-picks per task",
+                vec![
                     TeamMember::auto("router"),
                     TeamMember::auto("planner"),
                     TeamMember::auto("coder"),
@@ -99,34 +136,68 @@ impl Team {
                     TeamMember::auto("documenter"),
                     TeamMember::auto("oracle"),
                 ],
-            },
-            // Local-only preset — dispatches to ollama, never hits the
-            // network or burns API credit. Edit /team set coder <model>
-            // to pin a specific tag you've pulled (e.g. llama3.2:latest).
-            Team {
-                name: "local".to_string(),
-                blurb: "ollama only — free, offline, no API key".to_string(),
-                members: vec![
-                    TeamMember {
-                        agent: "coder".to_string(),
-                        model: "llama3.2:latest".to_string(),
-                        count: 1,
-                    },
-                ],
-            },
+            ),
+            mk(
+                "local",
+                "ollama only — free, offline, no API key",
+                vec![coder_llama],
+            ),
         ]
     }
 
-    pub fn total_size(&self) -> u32 {
-        self.members.iter().map(|m| m.count as u32).sum()
+    /// All 8 agent roles in canonical order, returning the existing
+    /// member if present or a default `auto`/excluded skeleton if not.
+    /// Used by the Hero Panel ROSTER to render every role consistently.
+    pub fn full_roster(&self) -> Vec<TeamMember> {
+        const ROLES: &[&str] = &[
+            "router", "planner", "coder", "reviewer", "debugger", "tester",
+            "documenter", "oracle",
+        ];
+        ROLES
+            .iter()
+            .map(|role| {
+                self.members
+                    .iter()
+                    .find(|m| m.agent == *role)
+                    .cloned()
+                    .unwrap_or_else(|| TeamMember {
+                        agent: role.to_string(),
+                        model: "auto".to_string(),
+                        count: 1,
+                        included: false,
+                        notes: None,
+                    })
+            })
+            .collect()
     }
 
-    /// If any member has a non-`auto` model assignment, return the first
-    /// such model — we pass it as `NEO_DEFAULT_MODEL`. Returns `None`
-    /// when the team is purely router-driven.
+    /// Number of *included* members times their counts. Excluded
+    /// members and members with included=false don't count.
+    pub fn active_size(&self) -> u32 {
+        self.members
+            .iter()
+            .filter(|m| m.included)
+            .map(|m| m.count as u32)
+            .sum()
+    }
+
+    /// Total roster size counting bench (excluded) members. Use
+    /// `active_size()` for "agents that will actually fire on a task".
+    pub fn total_size(&self) -> u32 {
+        self.members
+            .iter()
+            .filter(|m| m.included)
+            .map(|m| m.count as u32)
+            .sum()
+    }
+
+    /// If any *included* member has a non-`auto` model assignment,
+    /// return the first such model — we pass it as `NEO_DEFAULT_MODEL`.
+    /// Returns `None` when the team is purely router-driven.
     pub fn override_model(&self) -> Option<&str> {
         self.members
             .iter()
+            .filter(|m| m.included)
             .find(|m| m.model != "auto")
             .map(|m| m.model.as_str())
     }

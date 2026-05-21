@@ -8,6 +8,7 @@ pub mod models;
 pub mod overview;
 pub mod plans;
 pub mod sessions;
+pub mod team_builder;
 pub mod thread;
 pub mod tools;
 
@@ -19,6 +20,12 @@ use ratatui::{
 use crate::app::{App, Tab};
 
 pub fn render(f: &mut Frame, app: &App) {
+    // Hero Panel takes over the whole frame when open.
+    if app.builder_is_open() {
+        team_builder::render(f, app);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

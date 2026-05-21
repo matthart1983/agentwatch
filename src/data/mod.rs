@@ -6,6 +6,7 @@ pub mod pricing;
 pub mod provider;
 pub mod source;
 pub mod team;
+pub mod team_tags;
 pub mod threads;
 pub mod types;
 

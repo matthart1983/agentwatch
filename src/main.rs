@@ -77,6 +77,7 @@ fn run_loop<B: ratatui::backend::Backend>(
             app.prompt_is_empty(),
             app.job_in_flight(),
             app.slash_mode(),
+            app.builder_is_open(),
         )? {
             match action {
                 Action::Quit => break,
@@ -116,6 +117,8 @@ fn run_loop<B: ratatui::backend::Backend>(
                     }
                     _ => {}
                 },
+                Action::OpenBuilder => app.open_builder(),
+                Action::BuilderKey(k) => app.handle_builder_key(k),
             }
         }
     }

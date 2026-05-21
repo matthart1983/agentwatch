@@ -25,6 +25,11 @@ pub enum Action {
     /// Enter on an observer tab — tab-specific handler decides what to do.
     /// Today: Sessions resumes the selected thread.
     ObserverActivate,
+    /// Open the Hero Panel team builder.
+    OpenBuilder,
+    /// All keys while the builder is open route here; the builder owns
+    /// dispatch.
+    BuilderKey(KeyEvent),
 }
 
 /// Read one event (or time out and emit `Tick`). The caller passes:
@@ -41,6 +46,7 @@ pub fn poll_event(
     prompt_is_empty: bool,
     job_in_flight: bool,
     slash_mode: bool,
+    builder_open: bool,
 ) -> Result<Option<Action>> {
     if !event::poll(tick_rate)? {
         return Ok(Some(Action::Tick));
@@ -53,13 +59,21 @@ pub fn poll_event(
         return Ok(None);
     }
 
+    // Hero Panel takes over key input completely when open. The only
+    // override is Ctrl+C, which always quits.
+    if builder_open {
+        if matches!(k.code, KeyCode::Char('c')) && k.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return Ok(Some(Action::Quit));
+        }
+        return Ok(Some(Action::BuilderKey(k)));
+    }
+
     if let Some(a) = global_hotkey(&k, current_tab, prompt_is_empty, job_in_flight) {
         return Ok(Some(a));
     }
 
     if matches!(current_tab, Tab::Console | Tab::Thread) {
-        // Slash-popup intercepts a handful of nav keys before they hit
-        // the textarea so Up/Down move the highlight and Tab completes.
         if slash_mode {
             if let Some(a) = slash_popup_key(&k) {
                 return Ok(Some(a));
@@ -123,6 +137,9 @@ fn global_hotkey(
         (KeyCode::Tab, KeyModifiers::NONE) => Some(Action::NextTab),
         (KeyCode::BackTab, _) => Some(Action::PrevTab),
         (KeyCode::F(5), _) => Some(Action::Reload),
+        // Hero Panel hotkey — `T` on observer tabs, Ctrl+T anywhere.
+        (KeyCode::Char('T'), KeyModifiers::SHIFT) if !driver => Some(Action::OpenBuilder),
+        (KeyCode::Char('t'), KeyModifiers::CONTROL) => Some(Action::OpenBuilder),
 
         // ── Prompt submit / clear ───────────────────────────────────────
         (KeyCode::Enter, KeyModifiers::NONE) if driver => Some(Action::PromptSubmit),

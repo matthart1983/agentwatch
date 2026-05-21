@@ -125,6 +125,8 @@ pub struct App {
     /// Highlighted index in the slash-completion popup. Reset to 0 every
     /// time the filter list changes shape.
     pub slash_popup_idx: usize,
+    /// Hero Panel state. `Some` while the team builder overlay is open.
+    pub builder: Option<crate::builder::BuilderState>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,7 +210,228 @@ impl App {
             teams,
             active_team,
             slash_popup_idx: 0,
+            builder: None,
         }
+    }
+
+    /// Open the Hero Panel pointed at the currently active team.
+    pub fn open_builder(&mut self) {
+        let team = self.current_team().clone();
+        let presets_idx = self.active_team;
+        self.builder = Some(crate::builder::BuilderState::new(team, presets_idx));
+    }
+
+    pub fn close_builder(&mut self) {
+        self.builder = None;
+    }
+
+    pub fn builder_is_open(&self) -> bool {
+        self.builder.is_some()
+    }
+
+    /// Route a keystroke when the builder overlay is open. Returns true
+    /// if the keystroke triggered an exit so the main loop can break.
+    pub fn handle_builder_key(&mut self, k: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use crate::builder::BuilderFocus;
+        let Some(b) = self.builder.as_mut() else {
+            return;
+        };
+
+        let now = std::time::SystemTime::now();
+        let two_esc = b
+            .last_esc_at
+            .and_then(|t| now.duration_since(t).ok())
+            .map(|d| d.as_secs() < 2)
+            .unwrap_or(false);
+
+        match (k.code, k.modifiers) {
+            // ── Esc — context-sensitive ─────────────────────────────
+            (KeyCode::Esc, _) => match b.focus {
+                BuilderFocus::Models | BuilderFocus::Presets => {
+                    b.focus = BuilderFocus::Roster;
+                }
+                BuilderFocus::Naming => {
+                    b.naming = None;
+                    b.focus = BuilderFocus::Roster;
+                }
+                BuilderFocus::Roster => {
+                    if b.is_dirty() && !two_esc {
+                        b.last_esc_at = Some(now);
+                        self.set_toast(
+                            "unsaved changes — press esc again to discard, s to save",
+                        );
+                    } else {
+                        self.close_builder();
+                    }
+                }
+            },
+
+            // ── Roster ↔ Models ↔ Presets focus cycling ─────────────
+            (KeyCode::Tab, KeyModifiers::NONE) => b.focus_next(),
+            (KeyCode::BackTab, _) => b.focus_prev(),
+            (KeyCode::Char('m'), KeyModifiers::NONE) => {
+                b.focus = match b.focus {
+                    BuilderFocus::Models => BuilderFocus::Roster,
+                    _ => BuilderFocus::Models,
+                };
+                b.models_idx = 0;
+            }
+            (KeyCode::Char('p'), KeyModifiers::NONE) => {
+                b.focus = match b.focus {
+                    BuilderFocus::Presets => BuilderFocus::Roster,
+                    _ => BuilderFocus::Presets,
+                };
+            }
+
+            // ── Roster-focus actions ─────────────────────────────────
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Roster =>
+            {
+                b.roster_up()
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Roster =>
+            {
+                b.roster_down()
+            }
+            (KeyCode::Char(' '), _) if b.focus == BuilderFocus::Roster => {
+                b.toggle_included()
+            }
+            (KeyCode::Char('+'), _) | (KeyCode::Char('='), _)
+                if b.focus == BuilderFocus::Roster =>
+            {
+                b.adjust_count(1)
+            }
+            (KeyCode::Char('-'), _) | (KeyCode::Char('_'), _)
+                if b.focus == BuilderFocus::Roster =>
+            {
+                b.adjust_count(-1)
+            }
+            (KeyCode::Char('r'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Roster =>
+            {
+                b.set_selected_model("auto");
+            }
+
+            // ── Models-focus actions ─────────────────────────────────
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Models =>
+            {
+                b.models_idx = b.models_idx.saturating_sub(1);
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Models =>
+            {
+                let n = model_picker_len();
+                if b.models_idx + 1 < n {
+                    b.models_idx += 1;
+                }
+            }
+            (KeyCode::Enter, _) if b.focus == BuilderFocus::Models => {
+                if let Some(model) = model_at(b.models_idx) {
+                    b.set_selected_model(&model);
+                    b.focus = BuilderFocus::Roster;
+                }
+            }
+
+            // ── Presets-focus actions ────────────────────────────────
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Presets =>
+            {
+                b.presets_idx = b.presets_idx.saturating_sub(1);
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Presets =>
+            {
+                if b.presets_idx + 1 < self.teams.len() {
+                    b.presets_idx += 1;
+                }
+            }
+            (KeyCode::Enter, _) if b.focus == BuilderFocus::Presets => {
+                if let Some(t) = self.teams.get(b.presets_idx).cloned() {
+                    b.editing = t.clone();
+                    b.original = t;
+                    b.focus = BuilderFocus::Roster;
+                    b.roster_idx = 0;
+                }
+            }
+
+            // ── Save / delete / new ──────────────────────────────────
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                self.builder_save();
+            }
+            (KeyCode::Char('d'), KeyModifiers::NONE)
+                if b.focus == BuilderFocus::Presets =>
+            {
+                let name = self
+                    .teams
+                    .get(b.presets_idx)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default();
+                if let Some(t) = self.teams.get(b.presets_idx) {
+                    if t.is_preset {
+                        self.set_toast("can't delete a built-in preset");
+                    } else {
+                        self.teams.remove(b.presets_idx);
+                        if b.presets_idx >= self.teams.len() && b.presets_idx > 0 {
+                            // ok, b is borrowed mut, can't touch self.teams here
+                        }
+                        self.persist_teams();
+                        self.set_toast(&format!("deleted '{}'", name));
+                    }
+                }
+            }
+            (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                if let Some(b2) = self.builder.as_mut() {
+                    b2.editing = crate::data::Team {
+                        name: "untitled".to_string(),
+                        blurb: "".to_string(),
+                        members: Vec::new(),
+                        is_preset: false,
+                    };
+                    b2.original = b2.editing.clone();
+                    b2.focus = BuilderFocus::Roster;
+                    b2.roster_idx = 0;
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    /// Save the working copy. If it's a preset, save-as with a "(copy)"
+    /// suffix; if it's a user team, save in place.
+    fn builder_save(&mut self) {
+        let Some(b) = self.builder.as_mut() else {
+            return;
+        };
+        let mut to_save = b.editing.clone();
+        if to_save.is_preset {
+            to_save.name = format!("{}-edit", to_save.name);
+            to_save.is_preset = false;
+        }
+        let name = to_save.name.clone();
+        if let Some(idx) = self.teams.iter().position(|t| t.name == name) {
+            self.teams[idx] = to_save;
+            self.active_team = idx;
+        } else {
+            self.teams.push(to_save);
+            self.active_team = self.teams.len() - 1;
+        }
+        // Update the builder's snapshot so subsequent edits land on top
+        // of the saved state.
+        if let Some(b2) = self.builder.as_mut() {
+            b2.original = b2.editing.clone();
+            b2.original.is_preset = false;
+            b2.editing.is_preset = false;
+            b2.editing.name = name.clone();
+            b2.original.name = name.clone();
+            // presets_idx might be stale now — point at the new active team
+            b2.presets_idx = self.active_team;
+        }
+        self.persist_teams();
+        self.set_toast(&format!("saved '{}' and activated", name));
     }
 
     /// Is the user composing a slash command (prompt starts with `/`)?
@@ -594,6 +817,8 @@ impl App {
                     agent: agent.to_string(),
                     model,
                     count,
+                    included: true,
+                    notes: None,
                 });
                 self.set_toast(&format!("+ {} added to team", agent));
             }
@@ -1030,6 +1255,30 @@ pub fn expand_attachments(prompt: &str, workspace: &std::path::Path) -> (String,
         )),
     };
     (out, summary)
+}
+
+/// Flat list of (provider, model) pairs for the builder's model picker.
+/// Plus an "auto" entry at the top so users can revert from a fixed
+/// model back to router-managed selection.
+pub fn model_picker_entries() -> Vec<(crate::data::Provider, &'static str)> {
+    use crate::data::{pricing, Provider};
+    let mut out: Vec<(Provider, &'static str)> = vec![(Provider::Unknown, "auto")];
+    for (provider, models) in pricing::models_by_provider() {
+        for m in models {
+            out.push((provider, m));
+        }
+    }
+    out
+}
+
+pub fn model_picker_len() -> usize {
+    model_picker_entries().len()
+}
+
+pub fn model_at(idx: usize) -> Option<String> {
+    model_picker_entries()
+        .get(idx)
+        .map(|(_, m)| m.to_string())
 }
 
 /// One entry in the slash-command registry. Used for both the popup and
